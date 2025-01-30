@@ -217,12 +217,12 @@ class CumulusDriver(NetworkDriver):
                 serial_number = line.split()[-1]
 
         # Get "net show interface all json" output.
-        interfaces = self._send_command('nv show interface all -o json')
+        interfaces = self._send_command('nv show interface -o json')
         # Handling bad send_command_timing return output.
         try:
             interfaces = json.loads(interfaces)
         except ValueError:
-            interfaces = json.loads(self.device.send_command('nv show interface all -o json'))
+            interfaces = json.loads(self.device.send_command('nv show interface -o json'))
 
         facts['hostname'] = facts['fqdn'] = hostname
         facts['os_version'] = os_version
