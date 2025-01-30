@@ -494,7 +494,7 @@ class CumulusDriver(NetworkDriver):
     def get_lldp_neighbors(self):
         """Cumulus get_lldp_neighbors."""
         lldp = {}
-        command = 'nv show interfaces lldp -o json'
+        command = 'nv show interface lldp -o json'
 
         try:
             lldp_output = json.loads(self._send_command(command))
@@ -513,9 +513,9 @@ class CumulusDriver(NetworkDriver):
         :param interface:
         """
         lldp = {}
-        command = 'nv show interface lldp -o json'
+        command = 'nv show interface lldp-detail -o json'
         if interface:
-            command = f'nv show interface {interface} lldp -o json'
+            command = f'nv show interface {interface} lldp-detail -o json'
         try:
             lldp_output = json.loads(self._send_command(command))
         except ValueError:
