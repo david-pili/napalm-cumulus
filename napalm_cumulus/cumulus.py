@@ -438,17 +438,16 @@ class CumulusDriver(NetworkDriver):
 
     def _get_interface_neighbors(self, interface):
         neighbors = []
-        for idx, chassis in enumerate(interface['chassis']):
-            hostname = ''
-            if 'name' in chassis.keys():
-                hostname = chassis['name'][0]['value']
+        for idx, chassis in enumerate(interface['lldp']['neighbor'].values()):
+            print(chassis)
+            hostname = chassis.get("chassis").get('system-name')
+            port = chassis.get('port').get('name')
             neighbors.append({
                 'hostname': hostname,
-                'port': interface['port'][idx]['id'][0]['value'],
+                'port': port,
             })
 
         return neighbors
-
     def _get_interface_neighbors_detail(self, interface):
         neighbors = []
         command = 'nv show interface {} -o json'.format(interface['name'])
@@ -501,11 +500,8 @@ class CumulusDriver(NetworkDriver):
         except ValueError:
             lldp_output = json.loads(self.device.send_command(command))
 
-        for all_lldp in lldp_output['lldp']:
-            if 'interface' not in all_lldp.keys():
-                continue
-            for interface in all_lldp['interface']:
-                lldp[interface['name']] = self._get_interface_neighbors(interface)
+        for interface, neighbors in lldp_output.items():
+            lldp[interface] = self._get_interface_neighbors(neighbors)
         return lldp
 
     def get_lldp_neighbors_detail(self, interface=""):
