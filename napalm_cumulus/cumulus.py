@@ -217,12 +217,12 @@ class CumulusDriver(NetworkDriver):
                 serial_number = line.split()[-1]
 
         # Get "net show interface all json" output.
-        interfaces = self._send_command('nv show interface all json')
+        interfaces = self._send_command('nv show interface all -o json')
         # Handling bad send_command_timing return output.
         try:
             interfaces = json.loads(interfaces)
         except ValueError:
-            interfaces = json.loads(self.device.send_command('nv show interface all json'))
+            interfaces = json.loads(self.device.send_command('nv show interface all -o json'))
 
         facts['hostname'] = facts['fqdn'] = hostname
         facts['os_version'] = os_version
@@ -320,7 +320,7 @@ class CumulusDriver(NetworkDriver):
     def get_vlans(self):
         """Cumulus get_vlans."""
         vlan_details = {}
-        command = 'nv show bridge vlan json'
+        command = 'nv show bridge vlan -o json'
         try:
             vlan_details = json.loads(self._send_command(command))
         except ValueError:
@@ -451,7 +451,7 @@ class CumulusDriver(NetworkDriver):
 
     def _get_interface_neighbors_detail(self, interface):
         neighbors = []
-        command = 'nv show interface {} json'.format(interface['name'])
+        command = 'nv show interface {} -o json'.format(interface['name'])
         if_output = {}
         try:
             if_output = json.loads(self._send_command(command))
@@ -494,7 +494,7 @@ class CumulusDriver(NetworkDriver):
     def get_lldp_neighbors(self):
         """Cumulus get_lldp_neighbors."""
         lldp = {}
-        command = 'nv show lldp json'
+        command = 'nv show interfaces lldp -o json'
 
         try:
             lldp_output = json.loads(self._send_command(command))
