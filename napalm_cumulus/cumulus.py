@@ -202,7 +202,7 @@ class CumulusDriver(NetworkDriver):
         hostname = self.device.send_command('hostname')
 
         # Get "net show system" output.
-        show_system_output = self._send_command('net show system')
+        show_system_output = self._send_command('nv show system')
         for line in show_system_output.splitlines():
             if 'build' in line.lower():
                 os_version = line.split()[-1]
@@ -217,12 +217,12 @@ class CumulusDriver(NetworkDriver):
                 serial_number = line.split()[-1]
 
         # Get "net show interface all json" output.
-        interfaces = self._send_command('net show interface all json')
+        interfaces = self._send_command('nv show interface all json')
         # Handling bad send_command_timing return output.
         try:
             interfaces = json.loads(interfaces)
         except ValueError:
-            interfaces = json.loads(self.device.send_command('net show interface all json'))
+            interfaces = json.loads(self.device.send_command('nv show interface all json'))
 
         facts['hostname'] = facts['fqdn'] = hostname
         facts['os_version'] = os_version
@@ -320,7 +320,7 @@ class CumulusDriver(NetworkDriver):
     def get_vlans(self):
         """Cumulus get_vlans."""
         vlan_details = {}
-        command = 'net show bridge vlan json'
+        command = 'nv show bridge vlan json'
         try:
             vlan_details = json.loads(self._send_command(command))
         except ValueError:
@@ -451,7 +451,7 @@ class CumulusDriver(NetworkDriver):
 
     def _get_interface_neighbors_detail(self, interface):
         neighbors = []
-        command = 'net show interface {} json'.format(interface['name'])
+        command = 'nv show interface {} json'.format(interface['name'])
         if_output = {}
         try:
             if_output = json.loads(self._send_command(command))
@@ -494,7 +494,7 @@ class CumulusDriver(NetworkDriver):
     def get_lldp_neighbors(self):
         """Cumulus get_lldp_neighbors."""
         lldp = {}
-        command = 'net show lldp json'
+        command = 'nv show lldp json'
 
         try:
             lldp_output = json.loads(self._send_command(command))
@@ -513,9 +513,9 @@ class CumulusDriver(NetworkDriver):
         :param interface:
         """
         lldp = {}
-        command = 'net show lldp json'
+        command = 'nv show interface lldp -o json'
         if interface:
-            command = 'net show lldp {} json'.format(interface)
+            command = f'nv show interface {interface} lldp -o json'
         try:
             lldp_output = json.loads(self._send_command(command))
         except ValueError:
@@ -532,12 +532,12 @@ class CumulusDriver(NetworkDriver):
     def get_interfaces(self):
         interfaces = {}
         # Get 'net show interface all json' output.
-        output = self._send_command('net show interface all json')
+        output = self._send_command('nv show interface -o json')
         # Handling bad send_command_timing return output.
         try:
             output_json = json.loads(output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('net show interface all json'))
+            output_json = json.loads(self.device.send_command('nv show interface -o json'))
         for interface_name, interface_cu in output_json.items():
             interface = {}
             if interface_cu['linkstate'] == 'UP':
@@ -612,12 +612,12 @@ class CumulusDriver(NetworkDriver):
     def get_interface_mode(self, interface_name):
         interfaces = {}
         # Get 'net show interface all json' output.
-        output = self._send_command('net show interface {} json'.format(interface_name))
+        output = self._send_command('nv show interface {} -o json'.format(interface_name))
         # Handling bad send_command_timing return output.
         try:
             output_json = json.loads(output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('net show interface {} json'.format(interface_name)))
+            output_json = json.loads(self.device.send_command('nv show interface {} -o json'.format(interface_name)))
         return output_json['mode']. \
             lower(). \
             rstrip('/l2'). \
@@ -625,12 +625,12 @@ class CumulusDriver(NetworkDriver):
 
     def get_interfaces_ip(self):
         # Get net show interface all json output.
-        output = self._send_command('net show interface all json')
+        output = self._send_command('nv show interface -o json')
         # Handling bad send_command_timing return output.
         try:
             output_json = json.loads(output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('net show interface all json'))
+            output_json = json.loads(self.device.send_command('nv show interface -o json'))
 
         def rec_dd():
             return defaultdict(rec_dd)
@@ -653,12 +653,12 @@ class CumulusDriver(NetworkDriver):
         fans = {}
         temperature = {}
         power = {}
-        output = self._send_command('net show system sensors json')
+        output = self._send_command('nv show system sensors -o json')
         # Handling bad send_command_timing return output.
         try:
             output_json = json.loads(output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('net show system sensors json'))
+            output_json = json.loads(self.device.send_command('nv show system sensors -o json'))
 
         for sensor in output_json:
             if sensor['type'] == "temp":
