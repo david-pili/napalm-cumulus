@@ -439,7 +439,6 @@ class CumulusDriver(NetworkDriver):
     def _get_interface_neighbors(self, interface):
         neighbors = []
         for idx, chassis in enumerate(interface['lldp']['neighbor'].values()):
-            print(chassis)
             hostname = chassis.get("chassis").get('system-name')
             port = chassis.get('port').get('name')
             neighbors.append({
