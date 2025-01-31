@@ -502,6 +502,8 @@ class CumulusDriver(NetworkDriver):
         for interface, neighbors in lldp_output.items():
             if neighbors.get("type") in ["vrf",None,"loopback"]:
                 continue
+            if neighbors.get("link") is None:
+                continue
             lldp[interface] = self._get_interface_neighbors(neighbors)
         return lldp
 
