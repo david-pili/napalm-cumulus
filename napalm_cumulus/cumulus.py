@@ -500,6 +500,8 @@ class CumulusDriver(NetworkDriver):
             lldp_output = json.loads(self.device.send_command(command))
 
         for interface, neighbors in lldp_output.items():
+            if neighbors.get("type") in ["vrf",None,"loopback"]:
+                continue
             lldp[interface] = self._get_interface_neighbors(neighbors)
         return lldp
 
