@@ -436,56 +436,46 @@ class CumulusDriver(NetworkDriver):
 
             return ping_result
 
-    def _get_interface_neighbors(self, interface):
+    def _get_interface_neighbors(self, lldp):
         neighbors = []
-        for idx, chassis in enumerate(interface['lldp']['neighbor'].values()):
-            hostname = chassis.get("chassis").get('system-name')
-            port = chassis.get('port').get('name')
+        for neighbor in lldp.get('neighbor').values():
+            hostname = neighbor.get("chassis").get('system-name')
+            port = neighbor.get('port').get('name')
             neighbors.append({
                 'hostname': hostname,
                 'port': port,
             })
 
         return neighbors
-    def _get_interface_neighbors_detail(self, interface):
+    def _get_interface_neighbors_detail(self,name, lldp):
         neighbors = []
-        command = 'nv show interface {} -o json'.format(interface['name'])
+        command = 'nv show interface {} -o json'.format(name)
         if_output = {}
         try:
             if_output = json.loads(self._send_command(command))
         except ValueError:
             if_output = json.loads(self.device.send_command(command))
-        parent_interface = ''
-        print(if_output['summary'])
-        find_parent = re.search('Master: ([A-Za-z0-9_-]+)\(\w+\)', if_output['summary'], re.M)
-        if find_parent:
-            parent_interface = find_parent.group(1)
-
-        for idx, chassis in enumerate(interface['chassis']):
-            hostname = ''
-            if 'name' in chassis.keys():
-                hostname = chassis['name'][0]['value']
-            port = interface['port'][idx]
+        parent_interface = if_output.get('parent')
+        for neighbor in lldp.get('neighbor').values():
+            chassis = neighbor.get('chassis')
+            port = neighbor.get('port')
+            caps = []
+            reported_caps = chassis.get('capability')
+            if reported_caps:
+                if 'is-bridge' in reported_caps.keys():
+                    caps.append('bridge')
+                if 'is-router' in reported_caps.keys():
+                    caps.append('router')
             elem = {
                 'parent_interface': parent_interface,
-                'remote_chassis_id': chassis['id'][0]['value'],
-                'remote_system_name': hostname,
-                'remote_port': port['id'][0]['value'],
-                'remote_system_capab': [],
-                'remote_system_enable_capab': [],
-                'remote_system_description': '',
-                'remote_port_description': '',
+                'remote_chassis_id': chassis.get('chassis-id'),
+                'remote_system_name': chassis.get('system-name'),
+                'remote_port': port.get('name'),
+                'remote_port_description': port.get('description'),
+                'remote_system_description': chassis.get('system-description'),
+                'remote_system_capab': caps,
+                'remote_system_enable_capab': caps,
             }
-            if 'capability' in chassis.keys():
-                elem['remote_system_capab'] = [item['type'].lower() for item in chassis['capability']]
-                elem['remote_system_enable_capab'] = [item['type'].lower() for item in chassis['capability'] if
-                                                      item['enabled'] == True]
-
-            if 'descr' in chassis.keys():
-                elem['remote_system_description'] = chassis['descr'][0]['value']
-            if 'descr' in port.keys():
-                elem['remote_port_description'] = port['descr'][0]['value']
-
             neighbors.append(elem)
         return neighbors
 
@@ -500,11 +490,9 @@ class CumulusDriver(NetworkDriver):
             lldp_output = json.loads(self.device.send_command(command))
 
         for interface, neighbors in lldp_output.items():
-            if neighbors.get("type") in ["vrf",None,"loopback"]:
-                continue
-            if neighbors.get("link") is None:
-                continue
-            lldp[interface] = self._get_interface_neighbors(neighbors)
+            lldp_info = interface.get('lldp')
+            if lldp_info:
+                lldp[interface] = self._get_interface_neighbors(lldp_info)
         return lldp
 
     def get_lldp_neighbors_detail(self, interface=""):
@@ -520,43 +508,45 @@ class CumulusDriver(NetworkDriver):
         except ValueError:
             lldp_output = json.loads(self.device.send_command(command))
 
-        for all_lldp in lldp_output['lldp']:
-            if 'interface' not in all_lldp.keys():
-                continue
-            for interface in all_lldp['interface']:
-                lldp[interface['name']] = self._get_interface_neighbors_detail(interface)
+
+        for name,interface in lldp_output.items():
+            lldp_info = interface.get('lldp')
+            if lldp_info:
+                lldp[name] = self._get_interface_neighbors_detail(name, lldp_info)
 
         return lldp
 
     def get_interfaces(self):
         interfaces = {}
         # Get 'net show interface all json' output.
-        output = self._send_command('nv show interface -o json')
+        output = self._send_command('nv show interface mac -o json')
+        output_desc = self._send_command('nv show interface description -o json')
         # Handling bad send_command_timing return output.
         try:
             output_json = json.loads(output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('nv show interface -o json'))
+            output_json = json.loads(self.device.send_command('nv show interface mac -o json'))
+        try:
+            desc_json = json.loads(output_desc)
+        except ValueError:
+            desc_json = json.loads(self._send_command('nv show interface description -o json'))
         for interface_name, interface_cu in output_json.items():
             interface = {}
-            if interface_cu['linkstate'] == 'UP':
-                interface['is_enabled'] = True
-                interface['is_up'] = True
-            else:
-                interface['is_enabled'] = False
-                interface['is_up'] = False
+            link = interface_cu.get('link')
 
-            interface['description'] = interface_cu['summary']
-
-            if interface_cu['speed'] is None or interface_cu['speed'] == 'N/A':
+            interface['is_enabled'] = link.get('admin-status') == 'up'
+            interface['is_up'] = link.get('oper-status') == 'up'
+            interface['description'] = desc_json.get(interface_name).get('link').get('description')
+            speed = link.get('speed')
+            if not speed:
                 interface['speed'] = -1
-            elif interface_cu['speed'].endswith('G'):
-                interface['speed'] = int(interface_cu['speed'].rstrip('G')) * 1024
+            elif speed.endswith('G'):
+                interface['speed'] = int(speed.rstrip('G')) * 1024
             else:
-                interface['speed'] = int(interface_cu['speed'][:-1])
+                interface['speed'] = int(speed[:-1])
 
-            interface['mac_address'] = interface_cu['iface_obj']['mac']
-            interface['mtu'] = interface_cu['iface_obj']['mtu']
+            interface['mac_address'] = link.get('mac-address')
+            interface['mtu'] = link.get('mtu')
             interface['last_flapped'] = -1
             interfaces[interface_name] = interface
 
@@ -629,22 +619,19 @@ class CumulusDriver(NetworkDriver):
         try:
             output_json = json.loads(output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('nv show interface -o json'))
+            output_json = json.loads(self.device.send_command('33'))
 
         def rec_dd():
             return defaultdict(rec_dd)
 
         interfaces_ip = rec_dd()
 
-        for interface in output_json:
-            if not output_json[interface]['iface_obj']['ip_address']['allentries']:
-                continue
-            else:
-                for ip_address in output_json[interface]['iface_obj']['ip_address']['allentries']:
-                    ip_ver = ipaddress.ip_interface(ip_address).version
-                    ip_ver = 'ipv{}'.format(ip_ver)
-                    ip, prefix = ip_address.split('/')
-                    interfaces_ip[interface][ip_ver][ip] = {'prefix_length': int(prefix)}
+        for interface, values in output_json.items():
+            for ip_address in values.get('ip').get('address'):
+                ip_ver = ipaddress.ip_interface(ip_address).version
+                ip_ver = 'ipv{}'.format(ip_ver)
+                ip, prefix = ip_address.split('/')
+                interfaces_ip[interface][ip_ver][ip] = {'prefix_length': int(prefix)}
 
         return interfaces_ip
 
@@ -652,33 +639,69 @@ class CumulusDriver(NetworkDriver):
         fans = {}
         temperature = {}
         power = {}
-        output = self._send_command('nv show system sensors -o json')
+        cpu = {}
+        power_output = self._send_command('nv show platform environment psu -o json')
         # Handling bad send_command_timing return output.
         try:
-            output_json = json.loads(output)
+            power_json = json.loads(power_output)
         except ValueError:
-            output_json = json.loads(self.device.send_command('nv show system sensors -o json'))
+            power_json = json.loads(self.device.send_command('nv show platform environment psu -o json'))
+        for name,values in power_json.items():
+            power[name] ={
+                'status': values.get('state') == 'ok',
+                'capacity': float(values.get('capacity')),
+                'output': float(values.get('power'))
 
-        for sensor in output_json:
-            if sensor['type'] == "temp":
-                temperature[sensor['name']] = {
-                    "temperature": sensor['input'],
-                    "is_alert": True if sensor['state'] != "OK" else False,
-                    "is_critical": True if sensor['state'] != "OK" else False
-                }
-            if sensor['type'] == "fan":
-                fans[sensor['name']] = {
-                    "status": True if sensor['state'] == "OK" else False
-                }
-            if sensor['type'] == "power":
-                power[sensor['name']] = {
-                    "status": True if sensor['state'] == "OK" else False
-                }
+            }
+        temp_output = self._send_command('nv show platform environment temperature -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            temp_json = json.loads(temp_output)
+        except ValueError:
+            temp_json = json.loads(self.device.send_command('nv show platform environment temperature -o json'))
 
+        for name,values in temp_json.items():
+            temper = float(values.get('current'))
+            maximum = float(values.get('max'))
+            crit = float(values.get('crit'))
+            temperature[name] = {
+                'temperature': temper,
+                'is_alert': temper >= maximum,
+                'is_critical': temper >= crit
+            }
+        fan_output = self._send_command('nv show platform environment fan -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            fan_json = json.loads(fan_output)
+        except ValueError:
+            fan_json = json.loads(self.device.send_command('nv show platform environment fan -o json'))
+        for name,values in fan_json.items():
+            fans[name] = {
+                'sate': values.get('state') == 'ok'
+            }
+        cpu_output = self._send_command('nv show system cpu -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            cpu_json = json.loads(cpu_output)
+        except ValueError:
+            cpu_json = json.loads(self.device.send_command('nv show system cpu -o json'))
+
+        cpu[cpu_json.get('model')] =  cpu_json.get('utilization')
+        memory_output = self._send_command('nv show system memory -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            memory_json = json.loads(memory_output)
+        except ValueError:
+            memory_json = json.loads(self.device.send_command('nv show system memory -o json'))
+
+        memory = {
+            'available_ram': memory_json.get('Physical').get('total'),
+            'used_ram': memory_json.get('Physical').get('used')
+        }
         return {
             "fans": fans,
             "temperature": temperature,
             "power": power,
-            "cpu": {},
-            "memory": {}
+            "cpu": cpu,
+            "memory": memory
         }
