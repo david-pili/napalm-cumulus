@@ -308,36 +308,26 @@ class CumulusDriver(NetworkDriver):
 
         return ntp_stats
 
-    def _extract_all_vlans(self, vlan_spec):
-        if 'vlanEnd' not in vlan_spec.keys():
-            return [vlan_spec['vlan']]
-
-        vlans = []
-        for i in range(vlan_spec['vlan'], vlan_spec['vlanEnd'], 1):
-            vlans.append(i)
-        return vlans
-
     def get_vlans(self):
         """Cumulus get_vlans."""
-        vlan_details = {}
-        command = 'nv show bridge vlan -o json'
+        command = 'nv show bridge port-vlan -o json'
         try:
             vlan_details = json.loads(self._send_command(command))
         except ValueError:
             vlan_details = json.loads(self.device.send_command(command))
         final_vlans = {}
-
-        for interface, vlans_spec in vlan_details.items():
-            for vlan_spec in vlans_spec:
-                all_vlans = self._extract_all_vlans(vlan_spec)
-                for vlan in all_vlans:
-                    if vlan not in final_vlans.keys():
-                        final_vlans[vlan] = {
-                            'name': '',
-                            'interfaces': [interface]
+        vlans = json.loads(vlan_details)
+        for domain_data in vlans["domain"].values():
+            for port_name, port_data in domain_data.get("port", {}).items():
+                for vlan_id_str in port_data.get("vlan", {}):
+                    vlan_id = int(vlan_id_str)
+                    if vlan_id not in final_vlans:
+                        final_vlans[vlan_id] = {
+                            "name": f"vlan{vlan_id}",
+                            "interfaces": []
                         }
-                        continue
-                    final_vlans[vlan]['interfaces'].append(interface)
+                    final_vlans[vlan_id]["interfaces"].append(port_name)
+
         return final_vlans
 
     def ping(self,
