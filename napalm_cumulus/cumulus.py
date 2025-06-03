@@ -316,8 +316,7 @@ class CumulusDriver(NetworkDriver):
         except ValueError:
             vlan_details = json.loads(self.device.send_command(command))
         final_vlans = {}
-        vlans = json.loads(vlan_details)
-        for domain_data in vlans["domain"].values():
+        for domain_data in vlan_details["domain"].values():
             for port_name, port_data in domain_data.get("port", {}).items():
                 for vlan_id_str in port_data.get("vlan", {}):
                     vlan_id = int(vlan_id_str)
