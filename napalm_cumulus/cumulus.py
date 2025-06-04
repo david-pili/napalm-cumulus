@@ -43,6 +43,33 @@ except ModuleNotFoundError:
     from netmiko.exceptions import NetMikoTimeoutException
 from pytz import timezone
 
+from math import log10, floor
+
+def find_exp(number) -> int:
+    if number == 0:
+        return 0
+    base10 = log10(abs(number))
+    return abs(floor(base10))
+
+def parse_dbm(power_str: str) -> float:
+    """
+    Extracts the dBm value from a string like "0.7433 mW / -1.29 dBm"
+    """
+    try:
+        return float(power_str.split("/")[-1].strip().split()[0])
+    except Exception:
+        return 0.0  # Default fallback if the format is unexpected
+
+
+def parse_current(current_str: str) -> float:
+    """
+    Extracts the current value from a string like "5.500 mA"
+    """
+    try:
+        return float(current_str.strip().split()[0])
+    except Exception:
+        return 0.0
+
 
 class CumulusDriver(NetworkDriver):
     """Napalm driver for Cumulus."""
@@ -686,3 +713,81 @@ class CumulusDriver(NetworkDriver):
             "cpu": cpu,
             "memory": memory
         }
+
+    def get_optics(self):
+        command = 'nv show platform transceiver detail -o json'
+        try:
+            optics = json.loads(self._send_command(command))
+        except ValueError:
+            optics = json.loads(self.device.send_command(command))
+        result = {}
+
+        for intf_name, intf_data in optics.items():
+            channels = []
+            for ch_key, ch_data in intf_data.get("channel", {}).items():
+                index = int(ch_key.replace("channel-", ""))
+                rx_dbm = parse_dbm(ch_data["rx-power"]["power"])
+                tx_dbm = parse_dbm(ch_data["tx-power"]["power"])
+                bias = parse_current(ch_data["tx-bias-current"]["current"])
+
+                channel = {
+                    "index": index,
+                    "state": {
+                        "input_power": {
+                            "instant": rx_dbm,
+                            "avg": rx_dbm,
+                            "min": rx_dbm,
+                            "max": rx_dbm
+                        },
+                        "output_power": {
+                            "instant": tx_dbm,
+                            "avg": tx_dbm,
+                            "min": tx_dbm,
+                            "max": tx_dbm
+                        },
+                        "laser_bias_current": {
+                            "instant": bias,
+                            "avg": bias,
+                            "min": bias,
+                            "max": bias
+                        }
+                    }
+                }
+                channels.append(channel)
+
+            result[intf_name] = {
+                "physical_channels": {
+                    "channel": channels
+                }
+            }
+
+        return result
+
+    def get_interfaces_phy_details(self):
+        interfaces = self._send_command('nv show interface -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            interfaces = json.loads(interfaces)
+        except ValueError:
+            interfaces = json.loads(self.device.send_command('nv show interface -o json'))
+        interface_list = string_parsers.sorted_nicely(interfaces.keys())
+
+        results = {}
+        for interface in interface_list:
+            if 'swp' not in interface:
+                continue
+            command = f'nv show interface {interface} link phy-detail -o json'
+            try:
+                phy_detail = json.loads(self._send_command(command))
+            except ValueError:
+                phy_detail = json.loads(self.device.send_command(command))
+            phy_detail['warning'] = False
+            for k,v in phy_detail.items():
+                if 'raw-ber' not in k:
+                    continue
+                if find_exp(float(v)) < 8:
+                    phy_detail['warning'] = True
+            phy_detail['alarm'] = phy_detail['effective-errors'] != 0
+            print(interface)
+            results[interface] = phy_detail
+        return results
