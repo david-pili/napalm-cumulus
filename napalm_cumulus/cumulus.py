@@ -35,6 +35,8 @@ from napalm.base.exceptions import (
 )
 from napalm.base.utils import string_parsers
 from netmiko import ConnectHandler
+from netmiko.cli_tools.outputters import output_json
+
 try:
     from netmiko.ssh_exception import NetMikoTimeoutException
 except ModuleNotFoundError:
@@ -194,29 +196,18 @@ class CumulusDriver(NetworkDriver):
         return self.device.send_command_timing(command)
 
     def get_facts(self):
-        facts = {
-            'vendor': 'Nvidia',
-        }
-
-        # Get "net show hostname" output.
-        hostname = self.device.send_command('hostname')
-
+        facts = {}
+        command = 'nv show system -o json'
+        try:
+            system = json.loads(self._send_command(command))
+        except ValueError:
+            system = json.loads(self.device.send_command(command))
         # Get "net show system" output.
-        show_system_output = self._send_command('nv show system')
-        for line in show_system_output.splitlines():
-            if 'build' in line.lower():
-                os_version = line.split()[-1]
-                model = ' '.join(line.split()[1:3])
-            elif 'uptime' in line.lower():
-                uptime = line.split()[-1]
-
-        # Get "decode-syseeprom" output.
-        decode_syseeprom_output = self.device.send_command('decode-syseeprom')
-        for line in decode_syseeprom_output.splitlines():
-            if 'serial number' in line.lower():
-                serial_number = line.split()[-1]
-
-        # Get "net show interface all json" output.
+        command = 'decode-syseeprom -j'
+        try:
+            eeprom = json.loads(self._send_command(command))
+        except ValueError:
+            eeprom = json.loads(self.device.send_command(command))
         interfaces = self._send_command('nv show interface -o json')
         # Handling bad send_command_timing return output.
         try:
@@ -224,11 +215,12 @@ class CumulusDriver(NetworkDriver):
         except ValueError:
             interfaces = json.loads(self.device.send_command('nv show interface -o json'))
 
-        facts['hostname'] = facts['fqdn'] = hostname
-        facts['os_version'] = os_version
-        facts['model'] = model
-        facts['uptime'] = string_parsers.convert_uptime_string_seconds(uptime)
-        facts['serial_number'] = serial_number
+        facts['hostname'] = facts['fqdn'] = system.get('hostname')
+        facts['os_version'] = system.get('build')
+        facts['vendor'] = eeprom.get('tlv').get('Manufacturer').get('value')
+        facts['model'] = eeprom.get('tlv').get('Product Name').get('value')
+        facts['uptime'] = system.get('uptime')
+        facts['serial_number'] = eeprom.get('tlv').get('Serial Number').get('value')
         facts['interface_list'] = string_parsers.sorted_nicely(interfaces.keys())
         return facts
 
@@ -479,7 +471,7 @@ class CumulusDriver(NetworkDriver):
             lldp_output = json.loads(self.device.send_command(command))
 
         for interface, neighbors in lldp_output.items():
-            lldp_info = interface.get('lldp')
+            lldp_info = neighbors.get('lldp')
             if lldp_info:
                 lldp[interface] = self._get_interface_neighbors(lldp_info)
         return lldp
