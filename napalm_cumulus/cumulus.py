@@ -562,7 +562,7 @@ class CumulusDriver(NetworkDriver):
             return interfaces
 
         for interface_name in interfaces.keys():
-            command = "vtysh -c 'show interface %s'" % interface_name
+            command = "sudo vtysh -c 'show interface %s'" % interface_name
             quagga_show_int_output = self._send_command(command)
             # Get the link up and link down datetimes if available.
             for line in quagga_show_int_output.splitlines():
@@ -599,7 +599,7 @@ class CumulusDriver(NetworkDriver):
 
             if last_flapped != -1:
                 # Get remote timezone.
-                tmz = self.device.send_command('cat /etc/timezone')
+                tmz = self.device.send_command('cat /etc/timezone').strip()
                 now_time = datetime.now(timezone(tmz))
                 last_flapped = last_flapped.replace(tzinfo=timezone(tmz))
                 last_flapped = (now_time - last_flapped).total_seconds()
@@ -785,9 +785,10 @@ class CumulusDriver(NetworkDriver):
             for k,v in phy_detail.items():
                 if 'raw-ber' not in k:
                     continue
-                if find_exp(float(v)) < 8:
+                if v == '0':
+                    continue
+                if find_exp(float(v)) < 7:
                     phy_detail['warning'] = True
-            phy_detail['alarm'] = phy_detail['effective-errors'] != 0
-            print(interface)
+            phy_detail['alarm'] = phy_detail['effective-errors'] != '0'
             results[interface] = phy_detail
         return results
