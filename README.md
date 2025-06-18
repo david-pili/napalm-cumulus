@@ -15,7 +15,7 @@ This new fork include Netmiko >4 support, and added NVUE support for Cumulus 5.
 There is no PyPi repo, to install use command line:
 
 ```shell
-pip install git+https://github.com/justinbrink/napalm-cumulus.git@<release version>
+pip install git+https://github.com/david-pili/napalm-cumulus.git@master
 ```
 
 ## Usage
