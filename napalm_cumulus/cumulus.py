@@ -136,8 +136,8 @@ class CumulusDriver(NetworkDriver):
             raise ConnectionException('Cannot connect to {}'.format(self.hostname))
         except ValueError:
             raise ConnectionException('Cannot become root.')
-        build_output = self._send_command("nv show system")
-        if "Cumulus Linux 5" in build_output:
+        build_output = json.loads(self._send_command("nv show system -o json"))
+        if str(build_output.get("version", {}).get("product-release")).startswith("5."):
             self.use_nvue = True
 
     def close(self):
