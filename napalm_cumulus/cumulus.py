@@ -326,6 +326,35 @@ class CumulusDriver(NetworkDriver):
                 })
 
         return ntp_stats
+    def get_interface_vlans(self):
+        command = 'nv show bridge port-vlan -o json'
+        try:
+            vlan_details = json.loads(self._send_command(command))
+        except ValueError:
+            vlan_details = json.loads(self.device.send_command(command))
+        interface_vlans = {}
+        for domain_data in vlan_details["domain"].values():
+            for port_name, port_data in domain_data.get("port", {}).items():
+                interface_vlans.setdefault(port_name,{ "mode": "trunk",
+                                                       "tagged-vlans": [],
+                                                       "access": -1,
+                                                       "untagged": -1,})
+                for vlan_id_str, state in port_data.get("vlan", {}).items():
+                    if "-" in vlan_id_str:
+                        x, y = vlan_id_str.split("-")
+                        for vlan_id in range(int(x), int(y) + 1):
+                            interface_vlans[port_name]["tagged-vlans"].append(vlan_id)
+                    else:
+                        vlan_id = int(vlan_id_str)
+                        tag_state = state.get("tag-state")
+                        if tag_state == "access":
+                            interface_vlans[port_name]["mode"] = "access"
+                            interface_vlans[port_name]["access"] = vlan_id
+                        elif tag_state == "untagged":
+                            interface_vlans[port_name]["untagged"] = vlan_id
+                        else:
+                            interface_vlans[port_name]["tagged-vlans"].append(vlan_id)
+        return interface_vlans
 
     def get_vlans(self):
         """Cumulus get_vlans."""
@@ -338,12 +367,20 @@ class CumulusDriver(NetworkDriver):
         for domain_data in vlan_details["domain"].values():
             for port_name, port_data in domain_data.get("port", {}).items():
                 for vlan_id_str in port_data.get("vlan", {}):
+                    if "-" in vlan_id_str:
+                        x, y = vlan_id_str.split("-")
+                        for vlan_id in range(int(x),int(y)+1):
+                            final_vlans.setdefault(vlan_id,{
+                                "name": f"vlan{vlan_id}",
+                                "interfaces": []
+                            })
+                            final_vlans[vlan_id]["interfaces"].append(port_name)
+                    else:
                     vlan_id = int(vlan_id_str)
-                    if vlan_id not in final_vlans:
-                        final_vlans[vlan_id] = {
+                        final_vlans.setdefault(vlan_id, {
                             "name": f"vlan{vlan_id}",
                             "interfaces": []
-                        }
+                        })
                     final_vlans[vlan_id]["interfaces"].append(port_name)
 
         return final_vlans
@@ -792,3 +829,16 @@ class CumulusDriver(NetworkDriver):
             phy_detail['alarm'] = phy_detail['effective-errors'] != '0'
             results[interface] = phy_detail
         return results
+
+    def get_interfaces_bond_memers(self):
+        interfaces = self._send_command('nv show interface bond-members -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            interfaces = json.loads(interfaces)
+        except ValueError:
+            interfaces = json.loads(self.device.send_command('nv show interface bond-members -o json'))
+        bonds = {}
+        for interface, details in interfaces.items():
+            bond = details.get("parent")
+            bonds[interface] = bond
+        return bonds
