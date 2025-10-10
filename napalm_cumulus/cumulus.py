@@ -376,12 +376,12 @@ class CumulusDriver(NetworkDriver):
                             })
                             final_vlans[vlan_id]["interfaces"].append(port_name)
                     else:
-                    vlan_id = int(vlan_id_str)
+                        vlan_id = int(vlan_id_str)
                         final_vlans.setdefault(vlan_id, {
                             "name": f"vlan{vlan_id}",
                             "interfaces": []
                         })
-                    final_vlans[vlan_id]["interfaces"].append(port_name)
+                        final_vlans[vlan_id]["interfaces"].append(port_name)
 
         return final_vlans
 
