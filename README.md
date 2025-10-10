@@ -2,13 +2,7 @@
 
 This is a [NAPALM](https://napalm.readthedocs.io/en/latest/) driver for cumulus linux through ssh.
 
-This is a fork of <https://github/orange-cloudfoundry/napalm-cumulus/> which was a hard fork of <https://github.com/mattlan/napalm-cumulus/> which has 2 original authors:
-
-- mattlan
-- Gabriele Gerbino
-
-Hard fork was intentional because driver needed more update and last commits from orignal authors have 4-5 years.
-This new fork include Netmiko >4 support, and added NVUE support for Cumulus 5.
+This is a fork of https://github.com/justinbrink/napalm-cumulus with updates for Cumulus 5 and nvue. Tested on Cumulus 5.12
 
 ## Install
 
