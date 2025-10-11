@@ -31,7 +31,7 @@ import napalm.base.constants as C
 from napalm.base.base import NetworkDriver
 from napalm.base.exceptions import (
     ConnectionException,
-    MergeConfigException,
+    MergeConfigException, ReplaceConfigException, CommitError,
 )
 from napalm.base.utils import string_parsers
 from netmiko import ConnectHandler
@@ -40,7 +40,7 @@ from netmiko.cli_tools.outputters import output_json
 try:
     from netmiko.ssh_exception import NetMikoTimeoutException
 except ModuleNotFoundError:
-    from netmiko.exceptions import NetMikoTimeoutException
+    from netmiko.exceptions import NetMikoTimeoutException, ConfigInvalidException
 from pytz import timezone
 
 from math import log10, floor
@@ -73,7 +73,7 @@ def parse_current(current_str: str) -> float:
 
 class CumulusDriver(NetworkDriver):
     """Napalm driver for Cumulus."""
-
+    _RE_REVISION_INFO = re.compile("attached \[rev_id: (\d*)]")
     def __init__(self, hostname, username, password, timeout=60, optional_args=None):
         """Constructor."""
         self.device = None
@@ -116,14 +116,16 @@ class CumulusDriver(NetworkDriver):
         self.retrieve_details = optional_args.get('retrieve_details', False)
         self.has_sudo = optional_args.get('has_sudo', False)
         self.force = optional_args.get('force', False)
+        self.revision_id = None
 
     def open(self):
         try:
-            self.device = ConnectHandler(device_type='linux',
+            self.device = ConnectHandler(device_type='cumulus_linux',
                                          host=self.hostname,
                                          username=self.username,
                                          password=self.password,
-                                         **self.netmiko_optional_args)
+                                         **self.netmiko_optional_args,
+                                         )
             # Enter root mode.
             if self.has_sudo and self.netmiko_optional_args.get('secret'):
                 self.device.enable()
@@ -136,8 +138,9 @@ class CumulusDriver(NetworkDriver):
             raise ConnectionException('Cannot connect to {}'.format(self.hostname))
         except ValueError:
             raise ConnectionException('Cannot become root.')
-        build_output = json.loads(self._send_command("nv show system -o json"))
-        if str(build_output.get("version", {}).get("product-release")).startswith("5."):
+        try:
+            self.device.send_config_set("net show system",error_pattern="Error|command not found")
+        except ConfigInvalidException:
             self.use_nvue = True
 
     def close(self):
@@ -148,79 +151,137 @@ class CumulusDriver(NetworkDriver):
             'is_alive': self.device.remote_conn.transport.is_active()
         }
 
-    def load_merge_candidate(self, filename=None, config=None):
+    def _get_pending_commits(self):
+        pending_confirms = json.loads(self._send_command("nv config revision -o json"))
+        pending_ids = [k for k, v in pending_confirms.items() if v.get("state") == "confirm"]
+        return pending_ids
+
+    def _load_candidate(self, filename=None, config=None, replace=True):
         if not filename and not config:
             raise MergeConfigException('filename or config param must be provided.')
 
         self.loaded = True
-
+        revision_out = self._send_command("nv config attach applied -y")
+        self.revision_id = self._RE_REVISION_INFO.search(revision_out).group(1)
+        commands = []
+        if replace:
+            commands.append("nv config replace /usr/lib/python3/dist-packages/cue_config_v1/initial.yaml")
         if filename is not None:
-            with open(filename, 'r') as f:
-                candidate = f.readlines()
+            with open(filename, "r") as f:
+                lines = f.readlines()
         else:
-            candidate = config
-
-        if not isinstance(candidate, list):
-            candidate = [candidate]
-
-        candidate = [line for line in candidate if line]
-        for command in candidate:
-            if 'sudo' not in command:
-                command = '{0}'.format(command)
-            output = self._send_command(command)
-            if "error" in output or "not found" in output:
-                raise MergeConfigException("Command '{0}' cannot be applied.".format(command))
-
-    def discard_config(self):
-        if self.loaded:
-            if self.use_nvue:
-                self._send_command('nv config detach')
+            if isinstance(config, list):
+                lines = config
             else:
-                self._send_command('net abort')
-            self.loaded = False
+                lines = config.splitlines()
+
+        for line in lines:
+            line = line.strip()
+            if line == "":
+                continue
+            if line.startswith("#"):
+                continue
+            commands.append(line)
+        try:
+            self._send_config_set(commands)
+        except ConfigInvalidException as e:
+            self.discard_config()
+            msg = str(e)
+            if replace:
+                raise ReplaceConfigException(msg)
+            else:
+                raise MergeConfigException(msg)
+        return None
+
+    def _send_command(self, command):
+        return self.device.send_command_timing(command)
+
+    def _send_config_set(self, commands):
+        return self.device.send_config_set(commands, error_pattern="Error|command not found")
+
+    def load_replace_candidate(self, filename=None, config=None):
+        """Implementation of NAPALM method load_replace_candidate."""
+        self._load_candidate(filename, config, True)
+
+    def load_merge_candidate(self, filename=None, config=None):
+        """Implementation of NAPALM method load_merge_candidate."""
+        self._load_candidate(filename, config, False)
 
     def compare_config(self):
-        if self.loaded and self.use_nvue:
-            return self._send_command('nv config diff --color off')
-        elif self.loaded:
+        if not self.use_nvue:
             full_diff = self._send_command('net pending')
             # ignore commands that matched the existing config
             trimmed_diff = full_diff.split("net add/del commands")[0].strip()
             if trimmed_diff != '':
                 return re.sub(r'\x1b\[\d+m', '', full_diff)
-        return ''
+        return self._send_command('nv config diff --color off -o commands')
 
-    def commit_config(self, message=""):
-        if not self.loaded:
-            return
-        if self.use_nvue:
-            response = self._send_command('nv config apply')
-            if "[y/N]" in response:
-                if self.force:
-                    self._send_command('y')
-                else:
-                    self._send_command('n')
-                    self.discard_config()
-                    err_msg = response.split("Warning:")[1].split("Are you")[0].strip()
-                    raise MergeConfigException(f"Config cannot be applied. { err_msg }")
-        else:
+    def commit_config(self, message="", revert_in=None):
+        if message:
+            raise NotImplementedError(
+                "Commit message not implemented for this platform"
+            )
+        if not self.use_nvue:
             self._send_command('net commit')
-        self.changed = True
-        self.loaded = False
+            return None
+        if revert_in is not None:
+            if self.has_pending_commit():
+                raise CommitError("Pending commit confirm already in process!")
+            self._send_command(f"nv config apply --confirm {revert_in}s -y")
+        else:
+            return self._send_command('nv config apply -y')
+            self.revision_id = None
+
+    def confirm_commit(self):
+        """Send final commit to confirm an in-proces commit that requires confirmation."""
+        pending_commits = self._get_pending_commits()
+        # The specific 'config_session' must show up as a pending commit.
+        if self.revision_id in pending_commits:
+            self._send_command(f"nv config apply {self.revision_id} --confirm-yes")
+            self._send_command("nv config save")
+            self.revision_id = None
+        else:
+            raise CommitError("No pending commit-confirm found!")
+
+    def has_pending_commit(self):
+        """Boolean indicating if there is a commit-confirm in process."""
+        pending_commits = self._get_pending_commits()
+        # pending_commits will return an empty dict, if there are no commit-confirms pending.
+        return len(pending_commits)>0
+
+    def discard_config(self):
+
+        if not self.use_nvue:
+            self._send_command('net abort')
+            return None
+
+        self._send_command('nv config detach')
+        if self.revision_id:
+            self._send_command(f'nv config delete {self.revision_id}')
+            self.revision_id = None
+        return None
 
     def rollback(self):
-        if self.changed:
-            if self.use_nvue:
-                history_output = self._send_command('nv config history |grep rev_id:')
-                rev_history = history_output.splitlines()
-                previous_rev = rev_history[1].split()[1].strip("'")
-                self._send_command(f'nv config apply { previous_rev }')
+        """Implementation of NAPALM method rollback."""
+        # Commit-confirm check and abort
+        pending_commits = self._get_pending_commits()
+        if pending_commits:
+            # Make sure pending commit matches self.config_session
+            if self.revision_id in pending_commits:
+                self._send_command(f"nv config apply {self.revision_id} --confirm-no")
             else:
-                self._send_command('net rollback last')
-            self.changed = False
+                msg = "Current revision not found as pending commit-confirm"
+                raise CommitError(msg)
 
-    def _send_command(self, command):
-        return self.device.send_command_timing(command)
+        # Standard rollback
+        if not self.use_nvue:
+            self._send_command('net rollback last')
+
+        applied_revision = json.loads(self._send_command('nv config revision --applied -o json'))
+        parent_revision = applied_revision.get("applied").get("additional-data").get("parent-revision-id")
+        self._send_command(f'nv config apply { parent_revision } -y' )
+        self._send_command(f"nv config save")
+        self.revision_id = None
 
     def get_facts(self):
         facts = {}
@@ -250,6 +311,175 @@ class CumulusDriver(NetworkDriver):
         facts['serial_number'] = eeprom.get('tlv').get('Serial Number').get('value')
         facts['interface_list'] = string_parsers.sorted_nicely(interfaces.keys())
         return facts
+
+    def get_interfaces(self):
+        interfaces = {}
+        # Get 'net show interface all json' output.
+        output = self._send_command('nv show interface mac -o json')
+        output_desc = self._send_command('nv show interface description -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            output_json = json.loads(output)
+        except ValueError:
+            output_json = json.loads(self.device.send_command('nv show interface mac -o json'))
+        try:
+            desc_json = json.loads(output_desc)
+        except ValueError:
+            desc_json = json.loads(self._send_command('nv show interface description -o json'))
+        for interface_name, interface_cu in output_json.items():
+            interface = {}
+            link = interface_cu.get('link')
+
+            interface['is_enabled'] = link.get('admin-status') == 'up'
+            interface['is_up'] = link.get('oper-status') == 'up'
+            interface['description'] = desc_json.get(interface_name).get('link').get('description')
+            speed = link.get('speed')
+            if not speed:
+                interface['speed'] = -1
+            elif speed.endswith('G'):
+                interface['speed'] = int(speed.rstrip('G')) * 1024
+            else:
+                interface['speed'] = int(speed[:-1])
+
+            interface['mac_address'] = link.get('mac-address')
+            interface['mtu'] = link.get('mtu')
+            interface['last_flapped'] = -1
+            interfaces[interface_name] = interface
+
+        if not self.retrieve_details:
+            return interfaces
+
+        for interface_name in interfaces.keys():
+            command = "sudo vtysh -c 'show interface %s'" % interface_name
+            quagga_show_int_output = self._send_command(command)
+            # Get the link up and link down datetimes if available.
+            for line in quagga_show_int_output.splitlines():
+                if 'Link ups' in line:
+                    if '(never)' in line.split()[4]:
+                        last_flapped_1 = False
+                    else:
+                        last_flapped_1 = True
+                        last_flapped_1_date = line.split()[4] + " " + line.split()[5]
+                        last_flapped_1_date = datetime.strptime(
+                            last_flapped_1_date, "%Y/%m/%d %H:%M:%S.%f")
+                if 'Link downs' in line:
+                    if '(never)' in line.split()[4]:
+                        last_flapped_2 = False
+                    else:
+                        last_flapped_2 = True
+                        last_flapped_2_date = line.split()[4] + " " + line.split()[5]
+                        last_flapped_2_date = datetime.strptime(
+                            last_flapped_2_date, "%Y/%m/%d %H:%M:%S.%f")
+            # Compare the link up and link down datetimes to determine the most recent and
+            # set that as the last flapped after converting to seconds.
+            if last_flapped_1 and last_flapped_2:
+                last_delta = last_flapped_1_date - last_flapped_2_date
+                if last_delta.days >= 0:
+                    last_flapped = last_flapped_1_date
+                else:
+                    last_flapped = last_flapped_2_date
+            elif last_flapped_1:
+                last_flapped = last_flapped_1_date
+            elif last_flapped_2:
+                last_flapped = last_flapped_2_date
+            else:
+                last_flapped = -1
+
+            if last_flapped != -1:
+                # Get remote timezone.
+                tmz = self.device.send_command('cat /etc/timezone').strip()
+                now_time = datetime.now(timezone(tmz))
+                last_flapped = last_flapped.replace(tzinfo=timezone(tmz))
+                last_flapped = (now_time - last_flapped).total_seconds()
+            interfaces[interface_name]['last_flapped'] = float(last_flapped)
+        return interfaces
+
+    def get_lldp_neighbors(self):
+        """Cumulus get_lldp_neighbors."""
+        lldp = {}
+        command = 'nv show interface lldp -o json'
+
+        try:
+            lldp_output = json.loads(self._send_command(command))
+        except ValueError:
+            lldp_output = json.loads(self.device.send_command(command))
+
+        for interface, neighbors in lldp_output.items():
+            lldp_info = neighbors.get('lldp')
+            if lldp_info:
+                lldp[interface] = self._get_interface_neighbors(lldp_info)
+        return lldp
+
+    def get_environment(self):
+        fans = {}
+        temperature = {}
+        power = {}
+        cpu = {}
+        power_output = self._send_command('nv show platform environment psu -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            power_json = json.loads(power_output)
+        except ValueError:
+            power_json = json.loads(self.device.send_command('nv show platform environment psu -o json'))
+        for name,values in power_json.items():
+            power[name] ={
+                'status': values.get('state') == 'ok',
+                'capacity': float(values.get('capacity')),
+                'output': float(values.get('power'))
+
+            }
+        temp_output = self._send_command('nv show platform environment temperature -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            temp_json = json.loads(temp_output)
+        except ValueError:
+            temp_json = json.loads(self.device.send_command('nv show platform environment temperature -o json'))
+
+        for name,values in temp_json.items():
+            temper = float(values.get('current'))
+            maximum = float(values.get('max'))
+            crit = float(values.get('crit'))
+            temperature[name] = {
+                'temperature': temper,
+                'is_alert': temper >= maximum,
+                'is_critical': temper >= crit
+            }
+        fan_output = self._send_command('nv show platform environment fan -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            fan_json = json.loads(fan_output)
+        except ValueError:
+            fan_json = json.loads(self.device.send_command('nv show platform environment fan -o json'))
+        for name,values in fan_json.items():
+            fans[name] = {
+                'sate': values.get('state') == 'ok'
+            }
+        cpu_output = self._send_command('nv show system cpu -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            cpu_json = json.loads(cpu_output)
+        except ValueError:
+            cpu_json = json.loads(self.device.send_command('nv show system cpu -o json'))
+
+        cpu[cpu_json.get('model')] =  cpu_json.get('utilization')
+        memory_output = self._send_command('nv show system memory -o json')
+        # Handling bad send_command_timing return output.
+        try:
+            memory_json = json.loads(memory_output)
+        except ValueError:
+            memory_json = json.loads(self.device.send_command('nv show system memory -o json'))
+
+        memory = {
+            'available_ram': memory_json.get('Physical').get('total'),
+            'used_ram': memory_json.get('Physical').get('used')
+        }
+        return {
+            "fans": fans,
+            "temperature": temperature,
+            "power": power,
+            "cpu": cpu,
+            "memory": memory
+        }
 
     def get_arp_table(self):
 
@@ -326,6 +556,7 @@ class CumulusDriver(NetworkDriver):
                 })
 
         return ntp_stats
+
     def get_interface_vlans(self):
         command = 'nv show bridge port-vlan -o json'
         try:
@@ -492,6 +723,7 @@ class CumulusDriver(NetworkDriver):
             })
 
         return neighbors
+
     def _get_interface_neighbors_detail(self,name, lldp):
         neighbors = []
         command = 'nv show interface {} -o json'.format(name)
@@ -524,22 +756,6 @@ class CumulusDriver(NetworkDriver):
             neighbors.append(elem)
         return neighbors
 
-    def get_lldp_neighbors(self):
-        """Cumulus get_lldp_neighbors."""
-        lldp = {}
-        command = 'nv show interface lldp -o json'
-
-        try:
-            lldp_output = json.loads(self._send_command(command))
-        except ValueError:
-            lldp_output = json.loads(self.device.send_command(command))
-
-        for interface, neighbors in lldp_output.items():
-            lldp_info = neighbors.get('lldp')
-            if lldp_info:
-                lldp[interface] = self._get_interface_neighbors(lldp_info)
-        return lldp
-
     def get_lldp_neighbors_detail(self, interface=""):
         """Cumulus getlldp_neighbors_detail.
         :param interface:
@@ -560,88 +776,6 @@ class CumulusDriver(NetworkDriver):
                 lldp[name] = self._get_interface_neighbors_detail(name, lldp_info)
 
         return lldp
-
-    def get_interfaces(self):
-        interfaces = {}
-        # Get 'net show interface all json' output.
-        output = self._send_command('nv show interface mac -o json')
-        output_desc = self._send_command('nv show interface description -o json')
-        # Handling bad send_command_timing return output.
-        try:
-            output_json = json.loads(output)
-        except ValueError:
-            output_json = json.loads(self.device.send_command('nv show interface mac -o json'))
-        try:
-            desc_json = json.loads(output_desc)
-        except ValueError:
-            desc_json = json.loads(self._send_command('nv show interface description -o json'))
-        for interface_name, interface_cu in output_json.items():
-            interface = {}
-            link = interface_cu.get('link')
-
-            interface['is_enabled'] = link.get('admin-status') == 'up'
-            interface['is_up'] = link.get('oper-status') == 'up'
-            interface['description'] = desc_json.get(interface_name).get('link').get('description')
-            speed = link.get('speed')
-            if not speed:
-                interface['speed'] = -1
-            elif speed.endswith('G'):
-                interface['speed'] = int(speed.rstrip('G')) * 1024
-            else:
-                interface['speed'] = int(speed[:-1])
-
-            interface['mac_address'] = link.get('mac-address')
-            interface['mtu'] = link.get('mtu')
-            interface['last_flapped'] = -1
-            interfaces[interface_name] = interface
-
-        if not self.retrieve_details:
-            return interfaces
-
-        for interface_name in interfaces.keys():
-            command = "sudo vtysh -c 'show interface %s'" % interface_name
-            quagga_show_int_output = self._send_command(command)
-            # Get the link up and link down datetimes if available.
-            for line in quagga_show_int_output.splitlines():
-                if 'Link ups' in line:
-                    if '(never)' in line.split()[4]:
-                        last_flapped_1 = False
-                    else:
-                        last_flapped_1 = True
-                        last_flapped_1_date = line.split()[4] + " " + line.split()[5]
-                        last_flapped_1_date = datetime.strptime(
-                            last_flapped_1_date, "%Y/%m/%d %H:%M:%S.%f")
-                if 'Link downs' in line:
-                    if '(never)' in line.split()[4]:
-                        last_flapped_2 = False
-                    else:
-                        last_flapped_2 = True
-                        last_flapped_2_date = line.split()[4] + " " + line.split()[5]
-                        last_flapped_2_date = datetime.strptime(
-                            last_flapped_2_date, "%Y/%m/%d %H:%M:%S.%f")
-            # Compare the link up and link down datetimes to determine the most recent and
-            # set that as the last flapped after converting to seconds.
-            if last_flapped_1 and last_flapped_2:
-                last_delta = last_flapped_1_date - last_flapped_2_date
-                if last_delta.days >= 0:
-                    last_flapped = last_flapped_1_date
-                else:
-                    last_flapped = last_flapped_2_date
-            elif last_flapped_1:
-                last_flapped = last_flapped_1_date
-            elif last_flapped_2:
-                last_flapped = last_flapped_2_date
-            else:
-                last_flapped = -1
-
-            if last_flapped != -1:
-                # Get remote timezone.
-                tmz = self.device.send_command('cat /etc/timezone').strip()
-                now_time = datetime.now(timezone(tmz))
-                last_flapped = last_flapped.replace(tzinfo=timezone(tmz))
-                last_flapped = (now_time - last_flapped).total_seconds()
-            interfaces[interface_name]['last_flapped'] = float(last_flapped)
-        return interfaces
 
     def get_interface_mode(self, interface_name):
         interfaces = {}
@@ -679,77 +813,6 @@ class CumulusDriver(NetworkDriver):
                 interfaces_ip[interface][ip_ver][ip] = {'prefix_length': int(prefix)}
 
         return interfaces_ip
-
-    def get_environment(self):
-        fans = {}
-        temperature = {}
-        power = {}
-        cpu = {}
-        power_output = self._send_command('nv show platform environment psu -o json')
-        # Handling bad send_command_timing return output.
-        try:
-            power_json = json.loads(power_output)
-        except ValueError:
-            power_json = json.loads(self.device.send_command('nv show platform environment psu -o json'))
-        for name,values in power_json.items():
-            power[name] ={
-                'status': values.get('state') == 'ok',
-                'capacity': float(values.get('capacity')),
-                'output': float(values.get('power'))
-
-            }
-        temp_output = self._send_command('nv show platform environment temperature -o json')
-        # Handling bad send_command_timing return output.
-        try:
-            temp_json = json.loads(temp_output)
-        except ValueError:
-            temp_json = json.loads(self.device.send_command('nv show platform environment temperature -o json'))
-
-        for name,values in temp_json.items():
-            temper = float(values.get('current'))
-            maximum = float(values.get('max'))
-            crit = float(values.get('crit'))
-            temperature[name] = {
-                'temperature': temper,
-                'is_alert': temper >= maximum,
-                'is_critical': temper >= crit
-            }
-        fan_output = self._send_command('nv show platform environment fan -o json')
-        # Handling bad send_command_timing return output.
-        try:
-            fan_json = json.loads(fan_output)
-        except ValueError:
-            fan_json = json.loads(self.device.send_command('nv show platform environment fan -o json'))
-        for name,values in fan_json.items():
-            fans[name] = {
-                'sate': values.get('state') == 'ok'
-            }
-        cpu_output = self._send_command('nv show system cpu -o json')
-        # Handling bad send_command_timing return output.
-        try:
-            cpu_json = json.loads(cpu_output)
-        except ValueError:
-            cpu_json = json.loads(self.device.send_command('nv show system cpu -o json'))
-
-        cpu[cpu_json.get('model')] =  cpu_json.get('utilization')
-        memory_output = self._send_command('nv show system memory -o json')
-        # Handling bad send_command_timing return output.
-        try:
-            memory_json = json.loads(memory_output)
-        except ValueError:
-            memory_json = json.loads(self.device.send_command('nv show system memory -o json'))
-
-        memory = {
-            'available_ram': memory_json.get('Physical').get('total'),
-            'used_ram': memory_json.get('Physical').get('used')
-        }
-        return {
-            "fans": fans,
-            "temperature": temperature,
-            "power": power,
-            "cpu": cpu,
-            "memory": memory
-        }
 
     def get_optics(self):
         command = 'nv show platform transceiver detail -o json'
