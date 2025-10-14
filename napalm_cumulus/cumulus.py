@@ -139,7 +139,7 @@ class CumulusDriver(NetworkDriver):
         except ValueError:
             raise ConnectionException('Cannot become root.')
         try:
-            self.device.send_config_set("net show system",error_pattern="Error|command not found")
+            self._send_config_set("net show system")
         except ConfigInvalidException:
             self.use_nvue = True
 
@@ -197,7 +197,7 @@ class CumulusDriver(NetworkDriver):
         return self.device.send_command_timing(command)
 
     def _send_config_set(self, commands):
-        return self.device.send_config_set(commands, error_pattern="Error|command not found")
+        return self.device.send_config_set(commands, error_pattern="Error|command not found", enter_config_mode=False, exit_config_mode=False)
 
     def load_replace_candidate(self, filename=None, config=None):
         """Implementation of NAPALM method load_replace_candidate."""
