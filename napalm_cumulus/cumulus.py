@@ -144,7 +144,9 @@ class CumulusDriver(NetworkDriver):
             self.use_nvue = True
 
     def close(self):
-        self.device.disconnect()
+        if self.revision_id is not None and not self._get_pending_commits():
+            self.discard_config()
+        self._netmiko_close()
 
     def is_alive(self):
         return {
