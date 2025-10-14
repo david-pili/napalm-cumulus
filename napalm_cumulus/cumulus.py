@@ -726,15 +726,8 @@ class CumulusDriver(NetworkDriver):
 
         return neighbors
 
-    def _get_interface_neighbors_detail(self,name, lldp):
+    def _get_interface_neighbors_detail(self,name, lldp, parent):
         neighbors = []
-        command = 'nv show interface {} -o json'.format(name)
-        if_output = {}
-        try:
-            if_output = json.loads(self._send_command(command))
-        except ValueError:
-            if_output = json.loads(self.device.send_command(command))
-        parent_interface = if_output.get('parent')
         for neighbor in lldp.get('neighbor').values():
             chassis = neighbor.get('chassis')
             port = neighbor.get('port')
@@ -746,7 +739,7 @@ class CumulusDriver(NetworkDriver):
                 if 'is-router' in reported_caps.keys():
                     caps.append('router')
             elem = {
-                'parent_interface': parent_interface,
+                'parent_interface': parent,
                 'remote_chassis_id': chassis.get('chassis-id'),
                 'remote_system_name': chassis.get('system-name'),
                 'remote_port': port.get('name'),
@@ -770,12 +763,13 @@ class CumulusDriver(NetworkDriver):
             lldp_output = json.loads(self._send_command(command))
         except ValueError:
             lldp_output = json.loads(self.device.send_command(command))
-
-
+        command = "nv show interface bond-members -o json"
+        bonds =  json.loads(self._send_command(command))
         for name,interface in lldp_output.items():
+            parent = bonds.get(name, {}).get("parent")
             lldp_info = interface.get('lldp')
             if lldp_info:
-                lldp[name] = self._get_interface_neighbors_detail(name, lldp_info)
+                lldp[name] = self._get_interface_neighbors_detail(name, lldp_info, parent)
 
         return lldp
 
