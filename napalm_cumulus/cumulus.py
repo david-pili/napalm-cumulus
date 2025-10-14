@@ -120,7 +120,7 @@ class CumulusDriver(NetworkDriver):
 
     def open(self):
         try:
-            self.device = ConnectHandler(device_type='cumulus_linux',
+            self.device = ConnectHandler(device_type='linux',
                                          host=self.hostname,
                                          username=self.username,
                                          password=self.password,
