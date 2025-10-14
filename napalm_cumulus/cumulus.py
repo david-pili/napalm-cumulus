@@ -739,7 +739,7 @@ class CumulusDriver(NetworkDriver):
                 if 'is-router' in reported_caps.keys():
                     caps.append('router')
             elem = {
-                'parent_interface': parent,
+                'parent_interface': parent or "",
                 'remote_chassis_id': chassis.get('chassis-id'),
                 'remote_system_name': chassis.get('system-name'),
                 'remote_port': port.get('name'),
