@@ -216,7 +216,7 @@ class CumulusDriver(NetworkDriver):
             trimmed_diff = full_diff.split("net add/del commands")[0].strip()
             if trimmed_diff != '':
                 return re.sub(r'\x1b\[\d+m', '', full_diff)
-        return self._send_command('nv config diff --color off -o commands')
+        return self._send_command(f' diff <(nv config show -r applied -o commands) <(nv config show -r {self.revision_id} -o commands) -u  --label running_config --label candidate_config --color')
 
     def commit_config(self, message="", revert_in=None):
         if message:
