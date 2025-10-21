@@ -26,8 +26,10 @@ import json
 import re
 from collections import defaultdict
 from datetime import datetime
+from typing import List, Dict, Union, Any
 
 import napalm.base.constants as C
+from napalm.base import models, constants as c
 from napalm.base.base import NetworkDriver
 from napalm.base.exceptions import (
     ConnectionException,
@@ -73,6 +75,88 @@ def parse_current(current_str: str) -> float:
 
 class CumulusDriver(NetworkDriver):
     """Napalm driver for Cumulus."""
+
+    def get_bgp_neighbors(self) -> Dict[str, models.BGPStateNeighborsPerVRFDict]:
+        pass
+
+    def get_interfaces_counters(self) -> Dict[str, models.InterfaceCounterDict]:
+        pass
+
+    def get_bgp_config(self, group: str = "", neighbor: str = "") -> models.BGPConfigGroupDict:
+        pass
+
+    def cli(self, commands: List[str], encoding: str = "text") -> Dict[str, Union[str, Dict[str, Any]]]:
+        pass
+
+    def get_bgp_neighbors_detail(self, neighbor_address: str = "") -> Dict[str, models.PeerDetailsDict]:
+        pass
+
+    def get_ntp_peers(self) -> Dict[str, models.NTPPeerDict]:
+        pass
+
+    def get_ntp_servers(self) -> Dict[str, models.NTPServerDict]:
+        pass
+
+    def get_mac_address_table(self) -> List[models.MACAdressTable]:
+        pass
+
+    def get_route_to(self, destination: str = "", protocol: str = "", longer: bool = False) -> Dict[
+        str, models.RouteDict]:
+        pass
+
+    def get_snmp_information(self) -> models.SNMPDict:
+        pass
+
+    def get_probes_config(self) -> Dict[str, models.ProbeTestDict]:
+        pass
+
+    def get_probes_results(self) -> Dict[str, models.ProbeTestResultDict]:
+        pass
+
+    def traceroute(self, destination: str, source: str = c.TRACEROUTE_SOURCE, ttl: int = c.TRACEROUTE_TTL,
+                   timeout: int = c.TRACEROUTE_TIMEOUT, vrf: str = c.TRACEROUTE_VRF) -> models.TracerouteResultDict:
+        pass
+
+    def get_users(self) -> Dict[str, models.UsersDict]:
+        pass
+    _CFG_FORMAT_DICT = {"text": " -o commands", "json": " -o json", "yaml": " -o yaml", "yml": " -o yaml" }
+    def get_config(self, retrieve: str = "all", full: bool = False, sanitized: bool = False,
+                   format: str = "text") -> models.ConfigDict:
+        config: models.ConfigDict = {
+            "running": "",
+            "candidate": "",
+            "startup": "",
+        }  # default values
+        _format = self._CFG_FORMAT_DICT.get(format)
+        if not _format:
+            raise NotImplementedError(f"Cumulus does not support format={format} supported formats are text (commands), json, or yaml")
+        run_full = " --all" if full else ""
+        if retrieve.lower() in ("running", "all"):
+            command = f"nv config show --applied {run_full} {_format}"
+            output = self._send_command(command)
+            assert isinstance(output, str)
+            config["running"] = output.strip()
+        if retrieve.lower() in ("startup", "all"):
+            command = f"nv config show --startup {run_full} {_format}"
+            output = self._send_command(command)
+            assert isinstance(output, str)
+            config["startup"] = output.strip()
+        if retrieve.lower() in ("candidate", "all") and self.revision_id:
+            command = f"nv config show --pending {run_full} {_format}"
+            output = self._send_command(command)
+            assert isinstance(output, str)
+            config["startup"] = output.strip()
+        return config
+
+    def get_network_instances(self, name: str = "") -> Dict[str, models.NetworkInstanceDict]:
+        pass
+
+    def get_firewall_policies(self) -> Dict[str, List[models.FirewallPolicyDict]]:
+        pass
+
+    def get_ipv6_neighbors_table(self) -> List[models.IPV6NeighborDict]:
+        pass
+
     _RE_REVISION_INFO = re.compile("attached \[rev_id: (\d*)]")
     def __init__(self, hostname, username, password, timeout=60, optional_args=None):
         """Constructor."""
@@ -82,11 +166,9 @@ class CumulusDriver(NetworkDriver):
         self.password = password
         self.timeout = timeout
         self.force = False
-        self.loaded = False
-        self.changed = False
         self.has_sudo = False
         self.use_nvue = False
-
+        self.git_style_diff = False
         if optional_args is None:
             optional_args = {}
 
@@ -144,7 +226,7 @@ class CumulusDriver(NetworkDriver):
             self.use_nvue = True
 
     def close(self):
-        if self.revision_id is not None and not self._get_pending_commits():
+        if self.revision_id is not None and not self.has_pending_commit():
             self.discard_config()
         self._netmiko_close()
 
@@ -162,7 +244,6 @@ class CumulusDriver(NetworkDriver):
         if not filename and not config:
             raise MergeConfigException('filename or config param must be provided.')
 
-        self.loaded = True
         revision_out = self._send_command("nv config attach applied -y")
         self.revision_id = self._RE_REVISION_INFO.search(revision_out).group(1)
         commands = []
