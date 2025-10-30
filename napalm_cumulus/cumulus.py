@@ -505,10 +505,11 @@ class CumulusDriver(NetworkDriver):
         except ValueError:
             power_json = json.loads(self.device.send_command('nv show platform environment psu -o json'))
         for name,values in power_json.items():
+            state = values.get('state')
             power[name] ={
                 'status': values.get('state') == 'ok',
-                'capacity': float(values.get('capacity')),
-                'output': float(values.get('power'))
+                'capacity': float(values.get('capacity')) if state == 'ok' else 0.0,
+                'output': float(values.get('power')) if state == 'ok' else 0.0
 
             }
         temp_output = self._send_command('nv show platform environment temperature -o json')
