@@ -538,7 +538,7 @@ class CumulusDriver(NetworkDriver):
             fan_json = json.loads(self.device.send_command('nv show platform environment fan -o json'))
         for name,values in fan_json.items():
             fans[name] = {
-                'sate': values.get('state') == 'ok'
+                'status': values.get('state') == 'ok'
             }
         cpu_output = self._send_command('nv show system cpu -o json')
         # Handling bad send_command_timing return output.
