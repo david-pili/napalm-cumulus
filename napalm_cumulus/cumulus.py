@@ -520,6 +520,8 @@ class CumulusDriver(NetworkDriver):
             temp_json = json.loads(self.device.send_command('nv show platform environment temperature -o json'))
 
         for name,values in temp_json.items():
+            if values.get("state") != 'ok':
+                continue
             temper = float(values.get('current'))
             maximum = float(values.get('max'))
             crit = float(values.get('crit'))
